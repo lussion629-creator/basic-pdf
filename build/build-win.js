@@ -1,5 +1,5 @@
 // Windows 오프라인 설치본 빌드
-//   node build/build-win.js → dist/release/ (Basic-PDF-오프라인설치.zip, data.002 ~ data.004)
+//   node build/build-win.js → dist/release/ (Basic-PDF-Setup.zip, data.002 ~ data.004)
 // GitHub 첨부 한도에 맞춰 앱을 27MB 조각으로 나누고, 설치 스크립트가 합친 뒤 SHA-256으로 확인한다.
 'use strict';
 const fs = require('fs');
@@ -76,7 +76,7 @@ const bom = (t) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), crlf(t)]);
     [F + '설치 방법.txt']: [bom(guide), { level: 6 }],
     [F + 'data.001']: [new Uint8Array(parts[0]), { level: 0 }],
   });
-  fs.writeFileSync(path.join(REL, 'Basic-PDF-오프라인설치.zip'), zip);
+  fs.writeFileSync(path.join(REL, 'Basic-PDF-Setup.zip'), zip);
   fs.writeFileSync(path.join(REL, 'SHA256.txt'), `${sha}  (data.001 ~ ${last} 를 합친 파일)\n`);
 
   for (const f of fs.readdirSync(REL)) console.log(`  ${f}  ${(fs.statSync(path.join(REL, f)).size / 1048576).toFixed(1)} MB`);

@@ -1,9 +1,9 @@
 Basic PDF 오프라인 설치 방법 (인터넷 연결 필요 없음)
 
 1. 받은 파일 4개를 모두 같은 폴더(보통 '다운로드' 폴더)에 둡니다.
-   - Basic-PDF-오프라인설치.zip
+   - Basic-PDF-Setup.zip
    - data.002, data.003, data.004
-2. Basic-PDF-오프라인설치.zip 의 압축을 풉니다.
+2. Basic-PDF-Setup.zip 의 압축을 풉니다.
 3. 압축을 푼 폴더에서 '설치.bat'을 더블클릭합니다.
    - "Windows의 PC 보호" 창이 뜨면 [추가 정보] → [실행]을 누르세요.
    - data.002 ~ data.004 는 압축 푼 폴더나 다운로드 폴더에 있으면 자동으로 찾습니다.
