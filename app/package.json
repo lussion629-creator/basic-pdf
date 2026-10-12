@@ -1,0 +1,9 @@
+{
+  "name": "basic-pdf",
+  "productName": "Basic PDF",
+  "version": "1.0.0",
+  "description": "PDF 리더 및 편집기",
+  "main": "main.js",
+  "author": "Basic PDF",
+  "license": "MIT"
+}

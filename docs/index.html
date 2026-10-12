@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; font-src 'self' data:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<title>Basic PDF</title>
+<meta name="description" content="브라우저에서 바로 쓰는 PDF 리더·편집기. 파일은 서버로 전송되지 않습니다.">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="vendor/pdf_viewer.css">
+<link rel="stylesheet" href="styles.css">
+
+<style>
+.menu .menu-link { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; color: inherit; text-decoration: none; white-space: nowrap; }
+.menu .menu-link:hover { background: var(--hover); }
+.menu .menu-link svg { width: 16px; height: 16px; color: var(--fg-2); }
+.menu button:disabled { opacity: .4; pointer-events: none; }
+#webMenu { max-height: calc(100vh - 110px); overflow-y: auto; }
+@media (max-width: 760px) { .tb-title { display: none; } .tb-group.right .btn.primary { display: none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 탭 바 -->
+  <header id="tabbar">
+    <div class="brand" title="Basic PDF">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 2.5h8.2L19.5 7.8V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5Z" fill="var(--brand)"/><path d="M14 2.5V8h5.5" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="1.4"/><path d="M8 13.5h8M8 16.5h5.5" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </div>
+    <button class="tab home-tab" id="homeTab" data-tab="home"><i data-lucide="house"></i><span>홈</span></button>
+    <div id="tabs" class="tabs"></div>
+    <div class="tabbar-spacer"></div>
+  </header>
+
+  <!-- 상단 도구 모음 -->
+  <div id="toolbar">
+    <div class="tb-group">
+      <button class="tbtn" data-cmd="open" title="열기 (Ctrl+O)"><i data-lucide="folder-open"></i></button>
+      <button class="tbtn" data-cmd="save" title="저장 (Ctrl+S)" data-needs-doc><i data-lucide="save"></i></button>
+      <button class="tbtn" data-cmd="print" title="인쇄 (Ctrl+P)" data-needs-doc><i data-lucide="printer"></i></button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button class="tbtn" data-cmd="undo" title="실행 취소 (Ctrl+Z)" data-needs-doc><i data-lucide="undo-2"></i></button>
+      <button class="tbtn" data-cmd="redo" title="다시 실행 (Ctrl+Y)" data-needs-doc><i data-lucide="redo-2"></i></button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button class="tbtn" data-cmd="find" title="찾기 (Ctrl+F)" data-needs-doc><i data-lucide="search"></i></button>
+      <button class="tbtn" data-cmd="rotateCcw" title="보기 회전 (반시계)" data-needs-doc><i data-lucide="rotate-ccw"></i></button>
+      <button class="tbtn" data-cmd="rotateCw" title="보기 회전 (시계)" data-needs-doc><i data-lucide="rotate-cw"></i></button>
+      <div class="dropdown">
+        <button class="tbtn has-caret" id="layoutBtn" title="페이지 표시" data-needs-doc><i data-lucide="book-open"></i><i data-lucide="chevron-down" class="caret"></i></button>
+        <div class="menu" id="layoutMenu" hidden>
+          <button data-cmd="layoutSingle"><i data-lucide="file"></i>단일 페이지</button>
+          <button data-cmd="layoutScroll"><i data-lucide="scroll-text"></i>연속 스크롤</button>
+          <button data-cmd="layoutSpread"><i data-lucide="book-open"></i>두 페이지 보기</button>
+          <hr>
+          <button data-cmd="readMode"><i data-lucide="maximize"></i>읽기 모드</button>
+        </div>
+      </div>
+    </div>
+    <div class="tb-title" id="docTitle"></div>
+    <div class="tb-group right">
+      <button class="tbtn" data-cmd="properties" title="문서 속성 (Ctrl+D)" data-needs-doc><i data-lucide="info"></i></button>
+      <div class="dropdown">
+        <button class="tbtn has-caret" id="themeBtn" title="테마 (밝게·어둡게)"><i data-lucide="sun"></i><i data-lucide="chevron-down" class="caret"></i></button>
+        <div class="menu right" id="themeMenu" hidden>
+          <button data-cmd="themeLight"><i data-lucide="sun"></i>밝게</button>
+          <button data-cmd="themeDark"><i data-lucide="moon"></i>어둡게</button>
+          <button data-cmd="themeSystem"><i data-lucide="monitor"></i>시스템 설정 따르기</button>
+          <hr>
+          <button data-cmd="pageDark"><i data-lucide="book-open-text"></i>야간 읽기 (페이지도 어둡게)</button>
+        </div>
+      </div>
+      <div class="dropdown">
+        <button class="tbtn has-caret" id="webMenuBtn" title="메뉴"><i data-lucide="menu"></i><i data-lucide="chevron-down" class="caret"></i></button>
+        <div class="menu right" id="webMenu" hidden>
+          <button data-cmd="open"><i data-lucide="folder-open"></i>열기</button>
+          <button data-cmd="combine"><i data-lucide="files"></i>파일 결합</button>
+          <button data-cmd="save" data-needs-doc><i data-lucide="save"></i>저장</button>
+          <button data-cmd="saveAs" data-needs-doc><i data-lucide="download"></i>다른 이름으로 저장</button>
+          <button data-cmd="print" data-needs-doc><i data-lucide="printer"></i>인쇄</button>
+          <button data-cmd="closeTab" data-needs-doc><i data-lucide="x"></i>탭 닫기</button>
+          <hr>
+          <button data-cmd="exportPng" data-needs-doc><i data-lucide="image-down"></i>현재 페이지를 PNG로</button>
+          <button data-cmd="exportAllPng" data-needs-doc><i data-lucide="images"></i>모든 페이지를 PNG로</button>
+          <button data-cmd="exportText" data-needs-doc><i data-lucide="file-text"></i>텍스트(.txt)로</button>
+          <hr>
+          <button data-cmd="organize" data-needs-doc><i data-lucide="layout-grid"></i>페이지 구성</button>
+          <button data-cmd="pageNumbers" data-needs-doc><i data-lucide="hash"></i>페이지 번호 추가</button>
+          <button data-cmd="watermark" data-needs-doc><i data-lucide="droplet"></i>워터마크 추가</button>
+          <button data-cmd="properties" data-needs-doc><i data-lucide="info"></i>문서 속성</button>
+          <hr>
+          <button data-cmd="prefs"><i data-lucide="settings"></i>환경 설정</button>
+          <button data-cmd="privacyClear"><i data-lucide="shield-check"></i>개인 정보 지우기</button>
+          <button data-cmd="shortcuts"><i data-lucide="keyboard"></i>단축키</button>
+          <button data-cmd="about"><i data-lucide="circle-help"></i>Basic PDF 정보</button>
+          <a class="menu-link" href="https://github.com/lussion629-creator/basic-pdf" target="_blank" rel="noopener noreferrer"><i data-lucide="monitor-down"></i>Windows 앱 받기</a>
+        </div>
+      </div>
+      <button class="btn primary small" data-cmd="saveAs" data-needs-doc><i data-lucide="download"></i>다른 이름으로 저장</button>
+    </div>
+  </div>
+
+  <div id="body">
+    <!-- 모든 도구 패널 -->
+    <aside id="toolsPanel" class="side left">
+      <div class="side-head"><span>모든 도구</span><button class="ibtn" data-cmd="toggleTools" title="닫기"><i data-lucide="panel-left-close"></i></button></div>
+      <div class="side-scroll" id="allTools">
+        <div class="tool-cat">편집 및 정리</div>
+        <button class="tool-row" data-cmd="tool:edittext" data-needs-doc><span class="tic c-red"><i data-lucide="file-pen-line"></i></span><span><b>PDF 편집</b><small>기존 텍스트 수정·이미지 추가</small></span></button>
+        <button class="tool-row" data-cmd="organize" data-needs-doc><span class="tic c-green"><i data-lucide="layout-grid"></i></span><span><b>페이지 구성</b><small>순서 변경·회전·삭제·삽입·추출</small></span></button>
+        <button class="tool-row" data-cmd="combine"><span class="tic c-violet"><i data-lucide="files"></i></span><span><b>파일 결합</b><small>여러 PDF를 하나로 합치기</small></span></button>
+        <div class="tool-cat">검토 및 서명</div>
+        <button class="tool-row" data-cmd="tool:highlight" data-needs-doc><span class="tic c-yellow"><i data-lucide="message-square-text"></i></span><span><b>주석 달기</b><small>강조·메모·그리기·도형</small></span></button>
+        <button class="tool-row" data-cmd="tool:sign" data-needs-doc><span class="tic c-blue"><i data-lucide="signature"></i></span><span><b>서명 채우기</b><small>직접 그리거나 입력한 서명 넣기</small></span></button>
+        <button class="tool-row" data-cmd="tool:stamp" data-needs-doc><span class="tic c-orange"><i data-lucide="stamp"></i></span><span><b>스탬프</b><small>승인·검토·기밀 등</small></span></button>
+        <div class="tool-cat">페이지 꾸미기</div>
+        <button class="tool-row" data-cmd="pageNumbers" data-needs-doc><span class="tic c-teal"><i data-lucide="hash"></i></span><span><b>페이지 번호</b><small>머리글·바닥글에 번호 넣기</small></span></button>
+        <button class="tool-row" data-cmd="watermark" data-needs-doc><span class="tic c-blue"><i data-lucide="droplet"></i></span><span><b>워터마크</b><small>모든 페이지에 문구 겹치기</small></span></button>
+        <div class="tool-cat">내보내기</div>
+        <button class="tool-row" data-cmd="exportPng" data-needs-doc><span class="tic c-violet"><i data-lucide="image-down"></i></span><span><b>이미지로 내보내기</b><small>현재 페이지를 PNG로</small></span></button>
+        <button class="tool-row" data-cmd="exportAllPng" data-needs-doc><span class="tic c-violet"><i data-lucide="images"></i></span><span><b>전체 이미지 내보내기</b><small>모든 페이지를 PNG로</small></span></button>
+        <button class="tool-row" data-cmd="exportText" data-needs-doc><span class="tic c-teal"><i data-lucide="file-text"></i></span><span><b>텍스트 추출</b><small>.txt 파일로 저장</small></span></button>
+        <button class="tool-row" data-cmd="print" data-needs-doc><span class="tic c-gray"><i data-lucide="printer"></i></span><span><b>인쇄</b><small>주석 포함 인쇄</small></span></button>
+      </div>
+    </aside>
+
+    <!-- 빠른 도구 레일 -->
+    <nav id="rail" aria-label="빠른 도구">
+      <button class="rbtn" data-cmd="toggleTools" title="모든 도구"><i data-lucide="layout-panel-left"></i></button>
+      <div class="rail-sep"></div>
+      <button class="rbtn" data-tool="select" title="선택 (V)"><i data-lucide="mouse-pointer-2"></i></button>
+      <button class="rbtn" data-tool="hand" title="손 도구 (H)"><i data-lucide="hand"></i></button>
+      <div class="rail-sep"></div>
+      <button class="rbtn" data-tool="highlight" title="텍스트 강조 (드래그해서 선택)"><i data-lucide="highlighter"></i></button>
+      <button class="rbtn" data-tool="underline" title="밑줄"><i data-lucide="underline"></i></button>
+      <button class="rbtn" data-tool="strike" title="취소선"><i data-lucide="strikethrough"></i></button>
+      <button class="rbtn" data-tool="note" title="메모 추가"><i data-lucide="sticky-note"></i></button>
+      <button class="rbtn" data-tool="ink" title="펜으로 그리기"><i data-lucide="pen-tool"></i></button>
+      <button class="rbtn" data-tool="rect" title="도형" data-shape-group><i data-lucide="square"></i></button>
+      <button class="rbtn" data-tool="text" title="텍스트 상자"><i data-lucide="type"></i></button>
+      <div class="rail-sep"></div>
+      <button class="rbtn" data-tool="edittext" title="PDF 텍스트 편집"><i data-lucide="file-pen-line"></i></button>
+      <button class="rbtn" data-tool="image" title="이미지 추가"><i data-lucide="image-plus"></i></button>
+      <button class="rbtn" data-tool="whiteout" title="화이트아웃 (영역 가리기)"><i data-lucide="eraser"></i></button>
+      <button class="rbtn" data-tool="stamp" title="스탬프"><i data-lucide="stamp"></i></button>
+      <button class="rbtn" data-tool="sign" title="서명"><i data-lucide="signature"></i></button>
+    </nav>
+
+    <!-- 문서 영역 -->
+    <main id="stage">
+      <div id="home" class="home">
+        <div class="home-inner">
+          <div class="home-hero">
+            <h1>문서를 열어 작업을 시작하세요</h1>
+            <p>PDF를 여기로 끌어다 놓거나 열기를 누르세요. 읽기, 주석, 서명, 페이지 정리까지 한 곳에서 할 수 있습니다.</p>
+            <div class="home-actions">
+              <button class="btn primary" data-cmd="open"><i data-lucide="folder-open"></i>파일 열기</button>
+              <button class="btn" data-cmd="combine"><i data-lucide="files"></i>파일 결합</button>
+            </div>
+          </div>
+          <div class="home-quick">
+            <button class="qcard" data-cmd="open" data-after="tool:edittext"><span class="tic c-red"><i data-lucide="file-pen-line"></i></span><b>PDF 편집</b><small>텍스트와 이미지 수정</small></button>
+            <button class="qcard" data-cmd="open" data-after="tool:sign"><span class="tic c-blue"><i data-lucide="signature"></i></span><b>서명하기</b><small>문서에 서명 넣기</small></button>
+            <button class="qcard" data-cmd="open" data-after="organize"><span class="tic c-green"><i data-lucide="layout-grid"></i></span><b>페이지 구성</b><small>순서·회전·삭제</small></button>
+            <button class="qcard" data-cmd="combine"><span class="tic c-violet"><i data-lucide="files"></i></span><b>파일 결합</b><small>여러 PDF 합치기</small></button>
+          </div>
+          <section class="recent">
+            <div class="recent-head"><h2>최근 파일</h2></div>
+            <div class="recent-table" id="recentList"></div>
+          </section>
+        </div>
+      </div>
+
+      <div id="viewerWrap" hidden>
+        <div id="propbar" class="propbar" hidden></div>
+        <div id="findbar" class="findbar" hidden>
+          <i data-lucide="search" class="fb-ic"></i>
+          <input id="findInput" type="text" placeholder="문서에서 찾기" spellcheck="false">
+          <span id="findCount" class="fb-count"></span>
+          <button class="ibtn" id="findPrev" title="이전 (Shift+Enter)"><i data-lucide="chevron-up"></i></button>
+          <button class="ibtn" id="findNext" title="다음 (Enter)"><i data-lucide="chevron-down"></i></button>
+          <label class="fb-opt" title="대/소문자 구분"><input type="checkbox" id="findCase">Aa</label>
+          <label class="fb-opt" title="전체 단어"><input type="checkbox" id="findWord">단어</label>
+          <button class="ibtn" id="findClose" title="닫기 (Esc)"><i data-lucide="x"></i></button>
+        </div>
+        <div id="viewerContainer" tabindex="0">
+          <div id="viewer" class="pdfViewer"></div>
+        </div>
+        <div id="pagectl" class="pagectl">
+          <button class="ibtn" data-cmd="prevPage" title="이전 페이지"><i data-lucide="chevron-up"></i></button>
+          <input id="pageInput" type="text" inputmode="numeric" value="1" aria-label="페이지 번호">
+          <span id="pageTotal" class="pc-total">/ 1</span>
+          <button class="ibtn" data-cmd="nextPage" title="다음 페이지"><i data-lucide="chevron-down"></i></button>
+          <span class="pc-sep"></span>
+          <button class="ibtn" data-cmd="zoomOut" title="축소"><i data-lucide="zoom-out"></i></button>
+          <div class="dropdown up">
+            <button id="zoomBtn" class="zoom-val">100%</button>
+            <div class="menu" id="zoomMenu" hidden>
+              <button data-zoom="page-fit">페이지 맞춤</button>
+              <button data-zoom="page-width">너비 맞춤</button>
+              <button data-zoom="auto">자동</button>
+              <hr>
+              <button data-zoom="0.5">50%</button>
+              <button data-zoom="0.75">75%</button>
+              <button data-zoom="1">100%</button>
+              <button data-zoom="1.25">125%</button>
+              <button data-zoom="1.5">150%</button>
+              <button data-zoom="2">200%</button>
+              <button data-zoom="3">300%</button>
+              <button data-zoom="4">400%</button>
+            </div>
+          </div>
+          <button class="ibtn" data-cmd="zoomIn" title="확대"><i data-lucide="zoom-in"></i></button>
+        </div>
+        <div id="notePop" class="note-pop" hidden>
+          <div class="np-head"><span id="npAuthor"></span><span id="npTime"></span></div>
+          <textarea id="npText" placeholder="메모를 입력하세요"></textarea>
+          <div class="np-actions"><button class="btn small ghost" id="npDelete"><i data-lucide="trash-2"></i>삭제</button><button class="btn small primary" id="npDone">완료</button></div>
+        </div>
+      </div>
+
+      <div id="organizer" class="organizer" hidden>
+        <div class="org-bar">
+          <div class="org-title"><i data-lucide="layout-grid"></i><b>페이지 구성</b><span id="orgCount"></span></div>
+          <div class="org-actions">
+            <button class="btn small" data-org="rotl" title="왼쪽으로 회전"><i data-lucide="rotate-ccw"></i></button>
+            <button class="btn small" data-org="rotr" title="오른쪽으로 회전"><i data-lucide="rotate-cw"></i></button>
+            <button class="btn small" data-org="delete" title="삭제"><i data-lucide="trash-2"></i>삭제</button>
+            <span class="tb-sep"></span>
+            <button class="btn small" data-org="blank"><i data-lucide="file-plus-2"></i>빈 페이지</button>
+            <button class="btn small" data-org="insert"><i data-lucide="file-input"></i>파일에서 삽입</button>
+            <button class="btn small" data-org="extract"><i data-lucide="file-output"></i>추출</button>
+            <button class="btn small" data-org="split"><i data-lucide="scissors"></i>분할</button>
+            <span class="tb-sep"></span>
+            <label class="org-size" title="미리보기 크기"><i data-lucide="zoom-in"></i><input type="range" id="orgSize" min="110" max="260" value="160"></label>
+            <button class="btn small ghost" data-org="cancel">취소</button>
+            <button class="btn small primary" data-org="apply">적용</button>
+          </div>
+        </div>
+        <div class="org-hint">페이지를 끌어서 순서를 바꾸세요. Ctrl/Shift를 누른 채 클릭하면 여러 페이지를 선택합니다.</div>
+        <div id="orgGrid" class="org-grid"></div>
+      </div>
+
+      <div id="dropOverlay" class="drop-overlay" hidden><div><i data-lucide="file-down"></i><b>놓아서 PDF 열기</b></div></div>
+    </main>
+
+    <!-- 오른쪽 탐색 패널 -->
+    <aside id="navPanel" class="side right" hidden>
+      <div class="side-head">
+        <div class="seg" id="navSeg">
+          <button data-nav="thumbs" class="on">페이지</button>
+          <button data-nav="outline">책갈피</button>
+          <button data-nav="comments">주석<span id="cmtCount" class="pill"></span></button>
+        </div>
+        <button class="ibtn" data-cmd="toggleNav" title="닫기"><i data-lucide="panel-right-close"></i></button>
+      </div>
+      <div class="side-scroll" id="navThumbs"></div>
+      <div class="side-scroll" id="navOutline" hidden></div>
+      <div class="side-scroll" id="navComments" hidden></div>
+    </aside>
+    <nav id="navRail">
+      <button class="rbtn" data-navopen="thumbs" title="페이지 썸네일"><i data-lucide="gallery-vertical"></i></button>
+      <button class="rbtn" data-navopen="outline" title="책갈피"><i data-lucide="bookmark"></i></button>
+      <button class="rbtn" data-navopen="comments" title="주석 목록"><i data-lucide="messages-square"></i></button>
+    </nav>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toast" class="toast" hidden></div>
+<div id="printContainer"></div>
+<input type="file" id="imagePicker" accept="image/png,image/jpeg" hidden>
+
+<script src="web-host.js"></script>
+<script src="vendor/fflate.min.js"></script>
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf_viewer.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="vendor/fontkit2.min.js"></script>
+<script src="vendor/lucide.min.js"></script>
+<script src="annots.js"></script>
+<script src="pdfops.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

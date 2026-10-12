@@ -1,0 +1,11 @@
+node_modules/
+dist/
+app/icon.png
+test/shots/
+test/*.ttf
+test/*.otf
+test/out*.pdf
+test/web-out*
+*.png.tmp
+.DS_Store
+Thumbs.db

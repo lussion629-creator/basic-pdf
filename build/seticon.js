@@ -1,0 +1,16 @@
+const ResEdit = require('resedit'); const fs = require('fs');
+const exePath = process.argv[2], icoPath = process.argv[3];
+const exe = ResEdit.NtExecutable.from(fs.readFileSync(exePath), { ignoreCert: true });
+const res = ResEdit.NtExecutableResource.from(exe);
+const ico = ResEdit.Data.IconFile.from(fs.readFileSync(icoPath));
+const groups = ResEdit.Resource.IconGroupEntry.fromEntries(res.entries);
+const id = groups.length ? groups[0].id : 1, lang = groups.length ? groups[0].lang : 1033;
+ResEdit.Resource.IconGroupEntry.replaceIconsForResource(res.entries, id, lang, ico.icons.map(i => i.data));
+const vi = ResEdit.Resource.VersionInfo.fromEntries(res.entries)[0];
+const L = { lang: 1033, codepage: 1200 };
+vi.setStringValues(L, { FileDescription: 'Basic PDF', ProductName: 'Basic PDF', CompanyName: 'Basic PDF', OriginalFilename: 'BasicPDF.exe', InternalName: 'BasicPDF', LegalCopyright: 'MIT' });
+vi.setFileVersion(1, 0, 0, 0, 1033); vi.setProductVersion(1, 0, 0, 0, 1033);
+vi.outputToResourceEntries(res.entries);
+res.outputResource(exe);
+fs.writeFileSync(exePath, Buffer.from(exe.generate()));
+console.log('icon set');
