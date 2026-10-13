@@ -258,6 +258,7 @@ async function activateTab(tab) {
   if (S.active) { saveViewState(S.active); await captureForms(S.active); }
   S.active = tab; S.sel = null;
   showViewer(true);
+  renderPropbar(); // 문서 영역 크기를 먼저 정해야 '페이지 맞춤' 배율이 맞는다
   renderTabs();
   try {
     await loadIntoViewer(tab, true);
@@ -877,7 +878,8 @@ container.addEventListener('pointerdown', (e) => {
   const box = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
   const rotated = viewer.pagesRotation % 180 !== 0;
   const lineH = rotated ? box.w : box.h;
-  const fs = Math.max(4, Math.round((lineH / 1.17) * 2) / 2);
+  // pdf.js 텍스트 레이어의 줄 상자 높이는 PDF 글자 크기와 같다(line-height: 1)
+  const fs = Math.max(4, Math.round(lineH * 4) / 4);
   const color = sampleTextColor(pageDiv, r);
   const tab = S.active;
   const before = snap(tab);
@@ -923,83 +925,266 @@ function markEditedSpans(pi) {
   }
 }
 
-/* ---------- 텍스트 강조 / 밑줄 / 취소선 ---------- */
-document.addEventListener('pointerup', () => {
-  if (!MARKUP_TOOLS.includes(S.tool) || !S.active) return;
-  setTimeout(applyMarkup, 0);
-});
+/* ---------- 텍스트 강조 / 밑줄 / 취소선 ----------
+   브라우저 기본 텍스트 선택은 글자 상자가 흩어져 있는 PDF에서 쉽게 튄다(페이지 끝까지 선택 등).
+   그래서 페이지의 글자 위치를 직접 계산해, 누른 곳과 놓은 곳에서 가장 가까운 글자 사이만 칠한다. */
+const glyphCache = new Map(); // pi -> { layer, n, list }
 
-function textNodesInRange(range) {
-  const out = [];
-  const root = range.commonAncestorContainer.nodeType === 3 ? range.commonAncestorContainer.parentNode : range.commonAncestorContainer;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = walker.nextNode())) {
-    if (!n.textContent.length) continue;
-    if (!range.intersectsNode(n)) continue;
-    if (!n.parentElement.closest('.textLayer')) continue;
-    out.push(n);
-  }
-  if (!out.length && root.nodeType === 3) out.push(root);
-  return out;
+function pageMapper(pi) {
+  const ov = ensureOverlay(pi);
+  const m = ov.g.getScreenCTM().inverse();
+  return (x, y) => { const p = new DOMPoint(x, y).matrixTransform(m); return [p.x, p.y]; };
+}
+function boxOf(map, r) {
+  const pts = [map(r.left, r.top), map(r.right, r.top), map(r.left, r.bottom), map(r.right, r.bottom)];
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  return { x1: Math.min(...xs), x2: Math.max(...xs), y1: Math.min(...ys), y2: Math.max(...ys) };
 }
 
-function applyMarkup() {
-  const sel = getSelection();
-  if (!sel.rangeCount || sel.isCollapsed) return;
-  const range = sel.getRangeAt(0);
-  if (!container.contains(range.commonAncestorContainer)) return;
-  const tab = S.active;
-  const byPage = {};
-  for (const node of textNodesInRange(range)) {
-    const r = document.createRange();
-    r.selectNodeContents(node);
-    if (node === range.startContainer) r.setStart(node, range.startOffset);
-    if (node === range.endContainer) r.setEnd(node, range.endOffset);
-    const pageDiv = node.parentElement.closest('.page');
-    if (!pageDiv) continue;
-    const pi = +pageDiv.dataset.pageNumber - 1;
-    for (const cr of r.getClientRects()) {
-      if (cr.width < 0.5 || cr.height < 0.5) continue;
-      const cs = [[cr.left, cr.top], [cr.right, cr.bottom]].map(([x, y]) => toPage(pi, x, y));
-      const x = Math.min(cs[0].x, cs[1].x), y = Math.min(cs[0].y, cs[1].y);
-      (byPage[pi] = byPage[pi] || []).push([x, y, Math.abs(cs[1].x - cs[0].x), Math.abs(cs[1].y - cs[0].y)]);
+// 텍스트 레이어가 아직 없으면 null, 글자가 없는 페이지(스캔 이미지 등)면 빈 배열
+function pageGlyphs(pi) {
+  const pv = viewer.getPageView(pi);
+  const layer = pv && pv.div && pv.div.querySelector('.textLayer');
+  if (!layer || !(pv.textLayer && pv.textLayer.renderingDone)) return null;
+  const n = layer.querySelectorAll('span').length;
+  const c = glyphCache.get(pi);
+  if (c && c.layer === layer && c.n === n) return c.list;
+  const map = pageMapper(pi);
+  const list = [];
+  const range = document.createRange();
+  for (const sp of layer.querySelectorAll('span')) {
+    const node = Array.from(sp.childNodes).find(x => x.nodeType === 3 && x.textContent.length);
+    if (!node) continue;
+    const sb = sp.getBoundingClientRect();
+    if (sb.width < 0.1 || sb.height < 0.1) continue;
+    const spanBox = boxOf(map, sb);
+    const text = node.textContent;
+    // 가로쓰기: 글자 높이는 PDF 글꼴 기준으로 맞춘 줄 상자(span)를 쓴다. 대체 글꼴의 줄 높이를 쓰면 위로 들뜬다.
+    const horizontal = (spanBox.x2 - spanBox.x1) >= (spanBox.y2 - spanBox.y1) * 0.5 || text.length === 1;
+    const spanId = list.length ? list[list.length - 1].span + 1 : 0;
+    for (let i = 0; i < text.length; i++) {
+      let j = i + 1;
+      const code = text.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff && j < text.length) j++;
+      range.setStart(node, i); range.setEnd(node, j);
+      const r = range.getBoundingClientRect();
+      if (r.width || r.height) {
+        const b = boxOf(map, r);
+        if (horizontal) { b.y1 = spanBox.y1; b.y2 = spanBox.y2; }
+        list.push({ ...b, ch: text.slice(i, j), span: spanId });
+      }
+      i = j - 1;
     }
   }
-  const pages = Object.keys(byPage);
-  if (!pages.length) return;
-  const before = snap(tab);
-  const opt = S.opts[S.tool];
-  const text = sel.toString().replace(/\s+/g, ' ').trim();
-  for (const k of pages) {
-    const rects = mergeRects(byPage[k]);
-    addObj(tab, +k, { type: S.tool, rects, color: opt.color, opacity: opt.opacity, text: text.slice(0, 300) });
-  }
-  sel.removeAllRanges();
-  pushHistory(tab, before);
-  pages.forEach(k => drawPage(+k));
-  renderComments(); updateUndoButtons();
+  glyphCache.set(pi, { layer, n, list });
+  return list;
 }
 
-function mergeRects(rects) {
-  rects.sort((a, b) => (a[1] - b[1]) || (a[0] - b[0]));
-  const out = [];
-  for (const r of rects) {
-    const last = out[out.length - 1];
-    if (last) {
-      const sameLine = Math.abs((last[1] + last[3] / 2) - (r[1] + r[3] / 2)) < Math.min(last[3], r[3]) * 0.5;
-      const gap = r[0] - (last[0] + last[2]);
-      if (sameLine && gap < Math.max(last[3], r[3]) * 0.6 && gap > -Math.max(last[2], r[2])) {
-        const x1 = Math.min(last[0], r[0]), y1 = Math.min(last[1], r[1]);
-        const x2 = Math.max(last[0] + last[2], r[0] + r[2]), y2 = Math.max(last[1] + last[3], r[1] + r[3]);
-        out[out.length - 1] = [x1, y1, x2 - x1, y2 - y1];
+// 가장 가까운 글자 번호
+function nearestGlyph(glyphs, x, y) {
+  let best = 0, bestD = Infinity;
+  for (let k = 0; k < glyphs.length; k++) {
+    const g = glyphs[k];
+    const dy = y < g.y1 ? g.y1 - y : y > g.y2 ? y - g.y2 : 0;
+    const dx = x < g.x1 ? g.x1 - x : x > g.x2 ? x - g.x2 : 0;
+    const d = dy * 4 + dx; // 같은 줄을 먼저 고른다
+    if (d < bestD) { bestD = d; best = k; if (d === 0) break; }
+  }
+  return best;
+}
+// 화면 좌표에서 가장 가까운 글자 사이 위치(글자 k 앞 = k)
+function caretAt(glyphs, x, y) {
+  const k = nearestGlyph(glyphs, x, y), g = glyphs[k];
+  return k + (x > (g.x1 + g.x2) / 2 ? 1 : 0);
+}
+let lastMarkupDown = { t: 0, x: 0, y: 0 };
+
+const isSpace = (ch) => /^\s$/.test(ch);
+
+// 글자 범위를 줄 단위 상자로 묶는다 (단 사이·줄 바뀜에서 끊음)
+function glyphRuns(glyphs, lo, hi) {
+  const runs = [];
+  let cur = null;
+  for (let k = lo; k < hi; k++) {
+    const g = glyphs[k];
+    const h = g.y2 - g.y1;
+    if (cur) {
+      const ch = cur.y2 - cur.y1;
+      const sameLine = Math.abs((cur.y1 + cur.y2) / 2 - (g.y1 + g.y2) / 2) < Math.min(h, ch) * 0.5;
+      const gap = g.x1 - cur.x2;
+      if (sameLine && gap < Math.max(h, ch) * 2.5 && gap > -Math.max(h, ch)) {
+        cur.glyphs.push(g);
+        cur.x1 = Math.min(cur.x1, g.x1); cur.x2 = Math.max(cur.x2, g.x2);
+        cur.y1 = Math.min(cur.y1, g.y1); cur.y2 = Math.max(cur.y2, g.y2);
         continue;
       }
     }
-    out.push(r.slice());
+    cur = { x1: g.x1, x2: g.x2, y1: g.y1, y2: g.y2, glyphs: [g] };
+    runs.push(cur);
+  }
+  // 줄 끝 공백은 칠하지 않는다
+  const out = [];
+  for (const r of runs) {
+    let a = 0, b = r.glyphs.length - 1;
+    while (a <= b && isSpace(r.glyphs[a].ch)) a++;
+    while (b >= a && isSpace(r.glyphs[b].ch)) b--;
+    if (a > b) continue;
+    const gs = r.glyphs.slice(a, b + 1);
+    out.push({ x1: Math.min(...gs.map(g => g.x1)), x2: Math.max(...gs.map(g => g.x2)), y1: Math.min(...gs.map(g => g.y1)), y2: Math.max(...gs.map(g => g.y2)), text: gs.map(g => g.ch).join('') });
   }
   return out;
 }
+
+// 글자 k가 속한 줄의 가로 범위
+function lineExtent(glyphs, k) {
+  const g = glyphs[k], h = g.y2 - g.y1, cy = (g.y1 + g.y2) / 2;
+  const same = (o, prev) => Math.abs((o.y1 + o.y2) / 2 - cy) < h * 0.5 && Math.abs(o.x1 - prev.x2) < h * 2.5 + (o.x2 - o.x1) && Math.abs(prev.x1 - o.x2) < h * 2.5 + (o.x2 - o.x1);
+  let a = k, b = k;
+  while (a > 0 && same(glyphs[a - 1], glyphs[a])) a--;
+  while (b < glyphs.length - 1 && same(glyphs[b + 1], glyphs[b])) b++;
+  let x1 = Infinity, x2 = -Infinity;
+  for (let i = a; i <= b; i++) { x1 = Math.min(x1, glyphs[i].x1); x2 = Math.max(x2, glyphs[i].x2); }
+  return { x1, x2, cy };
+}
+
+// 두 단 문서: 시작 줄과 끝 줄이 같은 단에 있으면 다른 단의 줄은 빼고 칠한다
+function columnOf(glyphs, lo, hi) {
+  if (hi - lo < 2) return null;
+  const a = lineExtent(glyphs, lo), b = lineExtent(glyphs, hi - 1);
+  if (Math.abs(a.cy - b.cy) < 1) return null;
+  const overlap = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+  if (overlap <= 0) return null;
+  return { x1: Math.min(a.x1, b.x1), x2: Math.max(a.x2, b.x2) };
+}
+
+function markupFrom(glyphs, lo, hi) {
+  let runs = glyphRuns(glyphs, lo, hi);
+  const col = columnOf(glyphs, lo, hi);
+  if (col) {
+    const w = col.x2 - col.x1;
+    runs = runs.filter(r => Math.min(r.x2, col.x2) - Math.max(r.x1, col.x1) > Math.min(w, r.x2 - r.x1) * 0.3);
+  }
+  return {
+    rects: runs.map(r => [r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1]),
+    text: runs.map(r => r.text).join(' ').replace(/\s+/g, ' ').trim(),
+  };
+}
+
+function drawMarkupPreview(pi, obj) {
+  const ov = ensureOverlay(pi);
+  for (const el of [ov.hl, ov.g]) { const old = el.querySelector(':scope > .pl-preview'); if (old) old.remove(); }
+  if (!obj || !obj.rects.length) return;
+  const target = obj.type === 'highlight' ? ov.hl : ov.g;
+  const el = obj.type === 'highlight' ? ANN.renderHL(obj) : ANN.render(obj, ov.scale);
+  el.classList.add('pl-preview');
+  el.removeAttribute('data-id');
+  target.append(el);
+}
+
+function commitMarkup(pi, obj) {
+  drawMarkupPreview(pi, null);
+  if (!obj || !obj.rects.length) return;
+  const tab = S.active;
+  const before = snap(tab);
+  addObj(tab, pi, { ...obj, text: (obj.text || '').slice(0, 300) });
+  pushHistory(tab, before);
+  drawPage(pi);
+  renderComments(); updateUndoButtons();
+}
+
+// 끌 때 화면 가장자리에 가까우면 자동으로 스크롤
+function autoScroller() {
+  let vy = 0, raf = 0, last = null;
+  const tick = () => {
+    if (vy) { container.scrollTop += vy; if (last) last(); }
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  return {
+    update(ev, onScroll) {
+      const r = container.getBoundingClientRect();
+      const edge = 36;
+      vy = ev.clientY < r.top + edge ? -Math.ceil((r.top + edge - ev.clientY) / 3) : ev.clientY > r.bottom - edge ? Math.ceil((ev.clientY - (r.bottom - edge)) / 3) : 0;
+      last = onScroll;
+    },
+    stop() { cancelAnimationFrame(raf); vy = 0; },
+  };
+}
+
+container.addEventListener('pointerdown', (e) => {
+  if (!MARKUP_TOOLS.includes(S.tool) || !S.active || e.button !== 0) return;
+  if (e.target.closest('.annotationLayer :is(a, input, textarea, select, button), .pl-handle, .note-pop')) return;
+  const pageDiv = e.target.closest('.page');
+  if (!pageDiv) return;
+  e.preventDefault();
+  commitEdit(); closeNotePop();
+  getSelection().removeAllRanges();
+  const pi = +pageDiv.dataset.pageNumber - 1;
+  const glyphs = pageGlyphs(pi);
+  if (glyphs === null) { toast('페이지를 불러오는 중입니다. 잠시 뒤 다시 해 보세요.'); return; }
+  const tool = S.tool, opt = S.opts[tool];
+  const base = { type: tool, color: opt.color, opacity: opt.opacity };
+  const sx = e.clientX, sy = e.clientY;
+  let map = pageMapper(pi);
+  const at = (cx, cy) => map(cx, cy);
+
+  // 글자 없는 페이지(스캔 문서 등): 끈 영역을 사각형으로 칠한다
+  if (!glyphs.length) {
+    const [ax, ay] = at(sx, sy);
+    let obj = null, lastEv = e;
+    const scroller = autoScroller();
+    const update = () => {
+      map = pageMapper(pi);
+      const [bx, by] = at(lastEv.clientX, lastEv.clientY);
+      obj = { ...base, rects: [[Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay)]], text: '' };
+      drawMarkupPreview(pi, obj);
+    };
+    dragLoop((ev) => { lastEv = ev; scroller.update(ev, update); update(); }, () => {
+      scroller.stop();
+      if (!obj || obj.rects[0][2] < 3 || obj.rects[0][3] < 3) { drawMarkupPreview(pi, null); return; }
+      commitMarkup(pi, obj);
+    });
+    return;
+  }
+
+  // 두 번 누르면 단어 하나
+  const dbl = lastMarkupDown.tool === S.tool && performance.now() - lastMarkupDown.t < 450 && Math.hypot(sx - lastMarkupDown.x, sy - lastMarkupDown.y) < 6;
+  lastMarkupDown = { t: 0 };
+  if (dbl) {
+    const [x, y] = at(sx, sy);
+    const k = nearestGlyph(glyphs, x, y);
+    if (isSpace(glyphs[k].ch)) return;
+    let lo = k, hi = k + 1;
+    const span = glyphs[k].span;
+    while (lo > 0 && glyphs[lo - 1].span === span && !isSpace(glyphs[lo - 1].ch)) lo--;
+    while (hi < glyphs.length && glyphs[hi].span === span && !isSpace(glyphs[hi].ch)) hi++;
+    commitMarkup(pi, { ...base, ...markupFrom(glyphs, lo, hi) });
+    return;
+  }
+
+  const [ax, ay] = at(sx, sy);
+  const anchor = caretAt(glyphs, ax, ay);
+  let obj = null, moved = false, lastEv = e;
+  const scroller = autoScroller();
+  const update = () => {
+    map = pageMapper(pi);
+    const [x, y] = at(lastEv.clientX, lastEv.clientY);
+    const focus = caretAt(glyphs, x, y);
+    const lo = Math.min(anchor, focus), hi = Math.max(anchor, focus);
+    obj = hi > lo ? { ...base, ...markupFrom(glyphs, lo, hi) } : null;
+    drawMarkupPreview(pi, obj);
+  };
+  dragLoop((ev) => {
+    if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
+    moved = true; lastEv = ev;
+    scroller.update(ev, update);
+    update();
+  }, () => {
+    scroller.stop();
+    if (!moved) { drawMarkupPreview(pi, null); lastMarkupDown = { t: performance.now(), x: sx, y: sy, tool: S.tool }; return; }
+    commitMarkup(pi, obj);
+  });
+});
 
 /* ---------- 메모 팝업 ---------- */
 function openNotePop(pi, o, isNew = false) {
@@ -1041,7 +1226,7 @@ function closeNotePop(discard = false) {
 $('#npDone').onclick = () => closeNotePop();
 $('#npDelete').onclick = () => { const np = S.notePop; if (!np) return; S.sel = { pi: np.pi, id: np.id }; deleteSelected(); };
 $('#npText').addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') closeNotePop(); if (e.key === 'Enter' && e.ctrlKey) closeNotePop(); });
-container.addEventListener('scroll', () => { if (S.notePop) closeNotePop(); }, { passive: true });
+container.addEventListener('scroll', () => { if (S.notePop && !S.quietScroll) closeNotePop(); }, { passive: true });
 
 /* ---------- 손 도구 ---------- */
 container.addEventListener('pointerdown', (e) => {
@@ -1088,6 +1273,7 @@ function setTool(tool, silent) {
   if (tool === 'hand') container.classList.add('hand');
   if (tool === 'edittext') container.classList.add('edit-mode');
   if (DRAW_TOOLS.includes(tool)) container.classList.add('no-text');
+  if (MARKUP_TOOLS.includes(tool)) container.classList.add('markup');
   $$('svg.pl-overlay').forEach(svg => {
     svg.classList.toggle('active', DRAW_TOOLS.includes(tool));
     svg.classList.toggle('place', ['text', 'note', 'stamp', 'sign', 'image'].includes(tool));
@@ -1139,7 +1325,31 @@ function pbBtn(iconName, text, on, onClick, title) {
   return b;
 }
 
+// 속성 막대는 문서가 열려 있는 동안 늘 같은 자리에 있다(도구에 따라 내용만 바뀜).
+// 막대가 나타났다 사라지며 문서가 밀리면, 입력 중이던 텍스트 상자나 메모가 닫히기 때문.
+// 화면이 좁아 막대가 두 줄로 바뀔 때만 높이가 달라지며, 그때는 보던 위치를 유지한다.
+let pbHeight = 0;
+function syncPropbarSpace() {
+  const bar = $('#propbar');
+  const h = bar.hidden ? 0 : Math.ceil(bar.getBoundingClientRect().height);
+  if (h === pbHeight) return;
+  const delta = h - pbHeight;
+  const first = pbHeight === 0;
+  pbHeight = h;
+  $('#viewerWrap').style.setProperty('--pbh', h + 'px');
+  if (!S.pdf || !viewer.pdfDocument || first) return;
+  S.quietScroll = true;
+  container.scrollTop += delta;
+  requestAnimationFrame(() => { S.quietScroll = false; });
+}
+window.addEventListener('resize', () => syncPropbarSpace());
+
 function renderPropbar() {
+  renderPropbarInner();
+  syncPropbarSpace();
+}
+
+function renderPropbarInner() {
   const bar = $('#propbar');
   bar.innerHTML = '';
   const tab = S.active;
@@ -1165,7 +1375,14 @@ function renderPropbar() {
   const info = ANN.TYPES[type === 'sign' ? 'signature' : type];
   const src = selObj || S.opts[optKeyOf(tool)] || {};
 
-  if (!selObj && (tool === 'select' || tool === 'hand')) { bar.hidden = true; return; }
+  if (!selObj && (tool === 'select' || tool === 'hand')) {
+    bar.append(pbLabel(tool === 'hand' ? 'hand' : 'mouse-pointer-2', tool === 'hand' ? '손 도구' : '선택'));
+    bar.append(pbSep());
+    bar.append(hint(tool === 'hand' ? '끌어서 문서를 움직입니다.' : '글자를 끌어 선택·복사하고, 주석을 누르면 여기에서 색과 크기를 바꿀 수 있습니다.'));
+    bar.hidden = false;
+    icons(bar);
+    return;
+  }
 
   if (selObj) bar.append(pbLabel(info.icon, info.label));
 
@@ -1217,7 +1434,7 @@ function renderPropbar() {
     }
   }
   if (!selObj && tool === 'edittext') bar.append(pbSep(), hint('바꿀 텍스트를 클릭하세요. 편집한 줄은 원래 글자를 흰색으로 덮고 새 글자를 얹습니다.'));
-  if (!selObj && MARKUP_TOOLS.includes(tool)) bar.append(pbSep(), hint('문서의 텍스트를 드래그하세요'));
+  if (!selObj && MARKUP_TOOLS.includes(tool)) bar.append(pbSep(), hint('글자를 끌어서 칠하세요 · 두 번 누르면 단어 하나'));
   if (!selObj && tool === 'whiteout') bar.append(hint('가릴 영역을 드래그하세요. 화면과 인쇄물에서 가려지지만 원래 텍스트는 파일에 남습니다.'));
   if (!selObj && tool === 'image') bar.append(hint('이미지를 넣을 위치를 클릭하세요 (PNG, JPG)'));
   if (!selObj && tool === 'text') bar.append(pbSep(), hint('클릭하거나 드래그해서 상자를 만드세요'));
@@ -1472,13 +1689,14 @@ async function saveTab(tab, saveAs = false) {
 }
 
 /* ======================= 탐색 패널 ======================= */
-S.navOpen = store.get('navOpen', true);
+const narrow = () => matchMedia('(max-width: 760px)').matches;
+S.navOpen = narrow() ? false : store.get('navOpen', true);
 S.navTab = 'thumbs';
 function openNav(which) {
   if (!S.active) return;
   if (S.navOpen && S.navTab === which && which) { S.navOpen = false; }
   else { S.navOpen = true; if (which) S.navTab = which; }
-  store.set('navOpen', S.navOpen);
+  if (!narrow()) store.set('navOpen', S.navOpen);
   applyNav();
 }
 function applyNav() {
@@ -1516,7 +1734,7 @@ function buildThumbs() {
     t.className = 'thumb' + (i === viewer.currentPageNumber - 1 ? ' on' : '');
     t.dataset.i = i;
     t.innerHTML = `<div class="tframe" style="width:${W}px;height:${Math.round(W * ratio0)}px"></div><span class="tnum">${i + 1}</span>`;
-    t.onclick = () => { viewer.currentPageNumber = i + 1; };
+    t.onclick = () => { viewer.currentPageNumber = i + 1; if (narrow()) { S.navOpen = false; applyNav(); } };
     wrap.append(t);
     thumbObserver.observe(t);
   }
@@ -1587,38 +1805,94 @@ async function buildOutline() {
   icons(wrap);
 }
 
+/* 문서에 원래 들어 있던 주석(다른 프로그램이나 이전에 저장할 때 넣은 것)은 읽기 전용으로 함께 보여 준다 */
+const PDF_ANNOT_TYPES = {
+  Text: ['메모', 'sticky-note'], Highlight: ['강조', 'highlighter'], Underline: ['밑줄', 'underline'], Squiggly: ['물결 밑줄', 'underline'],
+  StrikeOut: ['취소선', 'strikethrough'], FreeText: ['텍스트 상자', 'type'], Square: ['사각형', 'square'], Circle: ['타원', 'circle'],
+  Line: ['선', 'minus'], Polygon: ['도형', 'pentagon'], PolyLine: ['꺾은선', 'spline'], Ink: ['그리기', 'pen-tool'], Stamp: ['스탬프', 'stamp'],
+  FileAttachment: ['첨부 파일', 'paperclip'], Caret: ['삽입 표시', 'chevron-up'], Sound: ['소리', 'volume-2'],
+};
+const pdfAnnotCache = new WeakMap(); // pdf → 목록 (불러오는 중이면 Promise)
+function pdfAnnotsOf(pdf) {
+  const c = pdfAnnotCache.get(pdf);
+  if (Array.isArray(c)) return c;
+  if (!c) {
+    const job = (async () => {
+      const out = [];
+      const n = Math.min(pdf.numPages, 500);
+      for (let i = 1; i <= n; i++) {
+        let list = [];
+        try { list = await (await pdf.getPage(i)).getAnnotations({ intent: 'display' }); } catch {}
+        for (const an of list) {
+          const t = PDF_ANNOT_TYPES[an.subtype];
+          if (!t) continue;
+          let when = null;
+          try { const d = pdfjsLib.PDFDateString.toDateObject(an.modificationDate || an.creationDate); when = d ? d.getTime() : null; } catch {}
+          out.push({ pi: i - 1, id: 'pdf-' + an.id, label: t[0], icon: t[1], text: (an.contentsObj && an.contentsObj.str) || '', author: (an.titleObj && an.titleObj.str) || '', when, rect: an.rect, color: an.color ? `rgb(${an.color[0]},${an.color[1]},${an.color[2]})` : null });
+        }
+      }
+      pdfAnnotCache.set(pdf, out);
+      if (S.pdf === pdf) renderComments();
+      return out;
+    })();
+    pdfAnnotCache.set(pdf, job);
+  }
+  return [];
+}
+
 function renderComments(onlySel) {
   const wrap = $('#navComments');
   const tab = S.active;
   const all = [];
   if (tab) for (const k of Object.keys(tab.annots)) for (const o of tab.annots[k]) all.push({ pi: +k, o });
-  $('#cmtCount').textContent = all.length || '';
+  const fromPdf = tab && S.pdf ? pdfAnnotsOf(S.pdf) : [];
+  $('#cmtCount').textContent = (all.length + fromPdf.length) || '';
   if (onlySel) {
     $$('.cm-item', wrap).forEach(it => it.classList.toggle('on', !!S.sel && it.dataset.id === S.sel.id));
     return;
   }
-  if (!all.length) {
+  if (!all.length && !fromPdf.length) {
     wrap.innerHTML = `<div class="empty">${ic('messages-square')}아직 주석이 없습니다.<br>왼쪽 도구로 강조, 메모, 그리기를 추가하세요.</div>`;
     icons(wrap); return;
   }
-  all.sort((a, b) => (a.pi - b.pi) || (ANN.bbox(a.o).y - ANN.bbox(b.o).y));
+  const rows = [
+    ...all.map(({ pi, o }) => ({ pi, y: ANN.bbox(o).y, mine: true, o })),
+    ...fromPdf.map(x => ({ pi: x.pi, y: -(x.rect ? x.rect[3] : 0), mine: false, x })),
+  ].sort((a, b) => (a.pi - b.pi) || (a.mine - b.mine) || (a.y - b.y));
   let html = '', last = -1;
-  for (const { pi, o } of all) {
-    if (pi !== last) { html += `<div class="cm-page">${pi + 1}페이지</div>`; last = pi; }
-    const t = ANN.TYPES[o.type] || { label: o.type, icon: 'circle' };
-    const color = o.color && o.type !== 'text' && o.type !== 'edittext' ? o.color : 'var(--fg-2)';
-    const desc = ANN.describe(o);
-    html += `<div class="cm-item ${S.sel && S.sel.id === o.id ? 'on' : ''}" data-id="${o.id}" data-pi="${pi}">
-      <span class="cm-ic" style="color:${esc(color)}">${ic(t.icon)}</span>
-      <div class="cm-body"><div class="cm-meta"><b>${esc(o.author || '')}</b><span>${fmtShort(o.modified || o.created)}</span></div>
-      <div class="cm-text">${esc(t.label)}${desc ? ' — ' + esc(desc) : ''}</div></div>
-      <button class="ibtn cm-del" title="삭제">${ic('trash-2')}</button></div>`;
+  for (const r of rows) {
+    if (r.pi !== last) { html += `<div class="cm-page">${r.pi + 1}페이지</div>`; last = r.pi; }
+    if (r.mine) {
+      const o = r.o;
+      const t = ANN.TYPES[o.type] || { label: o.type, icon: 'circle' };
+      const color = o.color && o.type !== 'text' && o.type !== 'edittext' ? o.color : 'var(--fg-2)';
+      const desc = ANN.describe(o);
+      html += `<div class="cm-item ${S.sel && S.sel.id === o.id ? 'on' : ''}" data-id="${o.id}" data-pi="${r.pi}">
+        <span class="cm-ic" style="color:${esc(color)}">${ic(t.icon)}</span>
+        <div class="cm-body"><div class="cm-meta"><b>${esc(o.author || '')}</b><span>${fmtShort(o.modified || o.created)}</span></div>
+        <div class="cm-text">${esc(t.label)}${desc ? ' — ' + esc(desc) : ''}</div></div>
+        <button class="ibtn cm-del" title="삭제">${ic('trash-2')}</button></div>`;
+    } else {
+      const x = r.x;
+      html += `<div class="cm-item from-pdf" data-pdf="${esc(x.id)}" data-pi="${r.pi}" title="문서에 들어 있던 주석 (여기서는 고칠 수 없음)">
+        <span class="cm-ic" style="color:${esc(x.color || 'var(--fg-2)')}">${ic(x.icon)}</span>
+        <div class="cm-body"><div class="cm-meta"><b>${esc(x.author || '문서')}</b><span>${x.when ? fmtShort(x.when) : ''}</span></div>
+        <div class="cm-text">${esc(x.label)}${x.text ? ' — ' + esc(x.text) : ''}</div></div>
+        <span class="cm-lock">${ic('lock')}</span></div>`;
+    }
   }
   wrap.innerHTML = html;
   icons(wrap);
   $$('.cm-item', wrap).forEach(it => {
     it.onclick = (e) => {
-      const pi = +it.dataset.pi, id = it.dataset.id;
+      const pi = +it.dataset.pi;
+      if (it.dataset.pdf) {
+        const x = fromPdf.find(q => q.id === it.dataset.pdf);
+        if (x && x.rect) viewer.scrollPageIntoView({ pageNumber: pi + 1, destArray: [null, { name: 'XYZ' }, x.rect[0] - 40, x.rect[3] + 60, null] });
+        else viewer.currentPageNumber = pi + 1;
+        return;
+      }
+      const id = it.dataset.id;
       if (e.target.closest('.cm-del')) { S.sel = { pi, id }; deleteSelected(); return; }
       goToObj(pi, id);
     };
@@ -1680,7 +1954,7 @@ eventBus.on('updatefindcontrolstate', ({ state, matchesCount }) => {
 eventBus.on('pagechanging', ({ pageNumber }) => { $('#pageInput').value = pageNumber; syncThumbSel(); });
 eventBus.on('scalechanging', updateZoomLabel);
 eventBus.on('pagerendered', ({ pageNumber }) => drawPage(pageNumber - 1));
-eventBus.on('textlayerrendered', ({ pageNumber }) => markEditedSpans(pageNumber - 1));
+eventBus.on('textlayerrendered', ({ pageNumber }) => { glyphCache.delete(pageNumber - 1); markEditedSpans(pageNumber - 1); });
 eventBus.on('rotationchanging', () => { buildThumbs(); });
 function updateZoomLabel() { $('#zoomBtn').textContent = `${Math.round((viewer.currentScale || 1) * 100)}%`; }
 $('#pageInput').addEventListener('keydown', (e) => {
@@ -2038,7 +2312,7 @@ async function combineFiles() {
   const files = await host.openDialog({ title: '결합할 PDF 선택', multi: true });
   if (!files.length) return;
   let order = files.slice();
-  const listHtml = () => order.map((f, i) => `<div class="rrow" style="grid-template-columns:28px minmax(0,1fr) auto" data-i="${i}"><span class="rfile">${ic('file-text')}</span><span class="rname"><b>${esc(basename(f))}</b><small>${esc(f)}</small></span><span style="display:flex;gap:2px"><button class="ibtn" data-m="up" title="위로">${ic('chevron-up')}</button><button class="ibtn" data-m="down" title="아래로">${ic('chevron-down')}</button><button class="ibtn" data-m="del" title="빼기">${ic('x')}</button></span></div>`).join('');
+  const listHtml = () => order.map((f, i) => `<div class="rrow" style="grid-template-columns:28px minmax(0,1fr) auto" data-i="${i}"><span class="rfile">${ic('file-text')}</span><span class="rname"><b>${esc(basename(f))}</b>${host.web ? '' : `<small>${esc(f)}</small>`}</span><span style="display:flex;gap:2px"><button class="ibtn" data-m="up" title="위로">${ic('chevron-up')}</button><button class="ibtn" data-m="down" title="아래로">${ic('chevron-down')}</button><button class="ibtn" data-m="del" title="빼기">${ic('x')}</button></span></div>`).join('');
   const { value } = await modal({
     title: '파일 결합', wide: true,
     body: `<p>순서를 확인한 뒤 결합하세요. 결과는 새 탭에서 열립니다.</p><div class="recent-table" id="cbList"></div><button class="btn small" id="cbAdd" style="align-self:flex-start">${ic('plus')}파일 추가</button>`,
@@ -2231,7 +2505,7 @@ async function propertiesDlg() {
     body: `<div class="field-row"><label class="field"><span>제목</span><input type="text" id="mTitle" value="${val('title', info.Title)}"></label><label class="field"><span>작성자</span><input type="text" id="mAuthor" value="${val('author', info.Author)}"></label></div>
       <div class="field-row"><label class="field"><span>주제</span><input type="text" id="mSubject" value="${val('subject', info.Subject)}"></label><label class="field"><span>키워드</span><input type="text" id="mKeys" value="${val('keywords', info.Keywords)}"></label></div>
       <dl class="kv">
-        <dt>파일</dt><dd>${esc(tab.path || '(저장되지 않음)')}</dd>
+        <dt>파일</dt><dd>${esc(host.web ? tab.name : (tab.path || '(저장되지 않음)'))}</dd>
         <dt>파일 크기</dt><dd>${fmtSize(tab.bytes.length)}</dd>
         <dt>페이지 수</dt><dd>${pdf.numPages}</dd>
         <dt>페이지 크기</dt><dd>${mm(x1 - x0)} × ${mm(y1 - y0)} mm (${(x1 - x0).toFixed(0)} × ${(y1 - y0).toFixed(0)} pt, ${viewer.currentPageNumber}페이지)</dd>
@@ -2293,7 +2567,7 @@ function shortcutsDlg() {
     ['파일 열기', 'Ctrl+O'], ['저장 / 다른 이름으로 저장', 'Ctrl+S / Ctrl+Shift+S'], ['인쇄', 'Ctrl+P'], ['찾기', 'Ctrl+F'],
     ['실행 취소 / 다시 실행', 'Ctrl+Z / Ctrl+Y'], ['확대 / 축소', 'Ctrl+= / Ctrl+-  (Ctrl+휠)'], ['실제 크기 / 페이지 맞춤 / 너비 맞춤', 'Ctrl+1 / Ctrl+0 / Ctrl+2'],
     ['선택 도구 / 손 도구', 'V / H'], ['강조 / 펜 / 텍스트 상자 / 메모', 'U / P / T / N'], ['선택한 주석 삭제', 'Delete'], ['선택한 주석 이동', '방향키 (Shift: 10pt)'],
-    ['다음 / 이전 페이지', 'PageDown / PageUp'], ['탭 전환 / 닫기', 'Ctrl+Tab / Ctrl+W'], ['읽기 모드', 'Ctrl+H (끝내기: Esc)'], ['탐색 창 / 도구 창', 'F4 / Shift+F4'],
+    ['다음 / 이전 페이지', 'PageDown / PageUp'], ...(host.web ? [] : [['탭 전환 / 닫기', 'Ctrl+Tab / Ctrl+W']]), ['읽기 모드', 'Ctrl+H (끝내기: Esc)'], ['탐색 창 / 도구 창', 'F4 / Shift+F4'],
     ['직선·정사각형 맞춤', '그릴 때 Shift'], ['밝게/어둡게 전환', 'Ctrl+Shift+L'], ['야간 읽기 (페이지도 어둡게)', 'Ctrl+Shift+N'],
   ];
   const shown = host.web ? rows.filter(([n]) => !/탭 전환|야간 읽기/.test(n)) : rows;
@@ -2352,7 +2626,7 @@ async function runCmd(cmd) {
     case 'layoutScroll': if (needDoc()) { viewer.scrollMode = ScrollMode.VERTICAL; viewer.spreadMode = SpreadMode.NONE; } $('#layoutMenu').hidden = true; return;
     case 'layoutSpread': if (needDoc()) { viewer.scrollMode = ScrollMode.VERTICAL; viewer.spreadMode = SpreadMode.ODD; } $('#layoutMenu').hidden = true; return;
     case 'toggleNav': return openNav(S.navOpen ? S.navTab : S.navTab);
-    case 'toggleTools': { const p = $('#toolsPanel'); p.hidden = !p.hidden; store.set('toolsOpen', !p.hidden); setTimeout(() => S.pdf && viewer.update(), 0); return; }
+    case 'toggleTools': { const p = $('#toolsPanel'); p.hidden = !p.hidden; if (!narrow()) store.set('toolsOpen', !p.hidden); setTimeout(() => S.pdf && viewer.update(), 0); return; }
     case 'readMode': return setReadMode(!document.body.classList.contains('read-mode'));
     case 'toggleTheme': S.prefs.theme = effectiveDark() ? 'light' : 'dark'; store.set('prefs', S.prefs); applyTheme(); syncThemeMenu(); return;
     case 'themeLight': S.prefs.theme = 'light'; store.set('prefs', S.prefs); applyTheme(); syncThemeMenu(); return;
@@ -2374,6 +2648,7 @@ function setReadMode(on) {
   document.body.classList.toggle('read-mode', on);
   host.setFullscreen(on);
   if (on) { setTool('select'); toast('읽기 모드입니다. Esc를 누르면 돌아갑니다.'); }
+  renderPropbar();
   setTimeout(() => { if (S.pdf) { viewer.update(); if (typeof viewer.currentScaleValue === 'string' && /page|auto/.test(viewer.currentScaleValue)) viewer.currentScaleValue = viewer.currentScaleValue; } }, 300);
 }
 
@@ -2393,6 +2668,9 @@ document.addEventListener('click', (e) => {
   }
 });
 $('#homeTab').onclick = () => goHome();
+// 좁은 화면에서는 패널이 문서를 덮으므로, 항목을 고르면 패널을 닫는다
+$('#allTools').addEventListener('click', (e) => { if (narrow() && e.target.closest('.tool-row')) { $('#toolsPanel').hidden = true; } });
+for (const id of ['#navOutline', '#navComments']) $(id).addEventListener('click', (e) => { if (narrow() && e.target.closest('.ol-link, .cm-item')) { S.navOpen = false; applyNav(); } });
 
 host.onMenu((cmd) => runCmd(cmd));
 host.onOpenPath((p) => openPath(p));
@@ -2525,7 +2803,7 @@ if (host.web) {
 /* ======================= 시작 ======================= */
 icons();
 loadSigs();
-if (!store.get('toolsOpen', false)) $('#toolsPanel').hidden = true;
+if (narrow() || !store.get('toolsOpen', false)) $('#toolsPanel').hidden = true;
 applyNav();
 renderTabs();
 renderRecent();

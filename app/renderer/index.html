@@ -2,6 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; font-src 'self' data:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
 <title>Basic PDF</title>
 <link rel="stylesheet" href="vendor/pdf_viewer.css">
@@ -49,6 +50,7 @@
     </div>
     <div class="tb-title" id="docTitle"></div>
     <div class="tb-group right">
+      <button class="tbtn narrow-only" data-cmd="toggleNav" title="페이지·책갈피·주석" data-needs-doc><i data-lucide="panel-right-open"></i></button>
       <button class="tbtn" data-cmd="properties" title="문서 속성 (Ctrl+D)" data-needs-doc><i data-lucide="info"></i></button>
       <div class="dropdown">
         <button class="tbtn has-caret" id="themeBtn" title="테마 (밝게·어둡게)"><i data-lucide="sun"></i><i data-lucide="chevron-down" class="caret"></i></button>

@@ -9,3 +9,6 @@ test/web-out*
 *.png.tmp
 .DS_Store
 Thumbs.db
+# 외부에서 받아 쓰는 시험용 PDF (저장소에 넣지 않음)
+test/fixtures/compressed.tracemonkey-pldi-09.pdf
+test/fixtures/alphatrans.pdf
