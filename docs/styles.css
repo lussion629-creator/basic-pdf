@@ -197,7 +197,10 @@ body.no-doc #rail .rbtn[data-tool], body.no-doc #navRail { opacity: .35; pointer
 .edit-mode .textLayer > span.edited { outline: none; background: none; pointer-events: none; }
 
 /* 주석 오버레이 */
-svg.pl-hl { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: multiply; pointer-events: none; overflow: visible; }
+/* 형광펜 층: 문서 그림(canvas)·글자 층보다 위에 두고 곱하기로 섞는다.
+   pdf.js는 확대 중에 그림 층을 z-index:1로 띄우고, 한글·워드 변환본은 줄마다 흰 배경을 깔아서
+   형광펜이 그 아래로 숨으면 줄 위아래 틈에만 가는 띠처럼 보인다. */
+svg.pl-hl { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: multiply; pointer-events: none; overflow: visible; z-index: 4; }
 svg.pl-overlay { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 6; overflow: visible; pointer-events: none; }
 svg.pl-overlay.active { pointer-events: all; cursor: crosshair; }
 svg.pl-overlay.active.place { cursor: copy; }

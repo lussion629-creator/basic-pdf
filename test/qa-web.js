@@ -103,6 +103,7 @@ const log = (...a) => fs.writeSync(1, a.join(' ') + '\n');
   }
   pg = await pageBox();
   await click(pg.x + pg.w * 0.3, pg.y + pg.h * 0.88);
+  await sleep(900); // 서명이 놓이고 선택 도구로 돌아갈 때까지
 
   // 9. 이미지 넣기
   await cmd('tool:image'); await sleep(500);
